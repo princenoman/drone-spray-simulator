@@ -164,10 +164,36 @@ class Simulator:
                     current_flight = [home]
                     r_dist = max_dist
                 else:
-                    current_flight.append(home)
-                    segments.append(current_flight)
-                    current_flight = [home]
-                    r_dist = max_dist
+                    L = self._dist(p_curr, p_next)
+                    t_safe = 0.0
+                    if L > 0:
+                        step_size = 1.0
+                        n_steps = int(L / step_size)
+                        for step in range(1, n_steps + 1):
+                            t = step / n_steps
+                            px = p_curr[0] + t * (p_next[0] - p_curr[0])
+                            py = p_curr[1] + t * (p_next[1] - p_curr[1])
+                            d_travel = t * L
+                            d_home = self._dist((px, py), home)
+                            if d_travel + d_home <= r_dist:
+                                t_safe = t
+                            else:
+                                break
+                    
+                    if t_safe > 0.0:
+                        p_safe = (p_curr[0] + t_safe * (p_next[0] - p_curr[0]),
+                                  p_curr[1] + t_safe * (p_next[1] - p_curr[1]))
+                        current_flight.append(p_safe)
+                        current_flight.append(home)
+                        segments.append(current_flight)
+                        current_flight = [home]
+                        r_dist = max_dist
+                        waypoints.insert(w_idx, p_safe)
+                    else:
+                        current_flight.append(home)
+                        segments.append(current_flight)
+                        current_flight = [home]
+                        r_dist = max_dist
 
         if len(current_flight) > 1:
             if current_flight[-1] != home:
