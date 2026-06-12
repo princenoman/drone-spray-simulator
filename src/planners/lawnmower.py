@@ -1,5 +1,5 @@
 import math
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from src.simulator.field import Field
 from src.simulator.drone import Drone
 
@@ -9,29 +9,31 @@ class LawnmowerPlanner:
         self.field = field
         self.drone = drone
 
-    def plan(self) -> List[Tuple[float, float]]:
+    def plan(self, sweep_angle_deg: Optional[float] = None) -> List[Tuple[float, float]]:
+        if sweep_angle_deg is None:
+            sweep_angle_deg = 0.0
         if self.field.is_polygon:
-            return self._sweep_path(0.0)
-        return self._plan_rectangle()
+            return self._sweep_path(sweep_angle_deg)
+        return self._sweep_path_rectangle(sweep_angle_deg)
 
     def _plan_rectangle(self) -> List[Tuple[float, float]]:
-        n_rows = max(1, math.ceil(self.field.height / self.drone.spray_width))
-        spacing = self.field.height / n_rows
+        n_cols = max(1, math.ceil(self.field.width / self.drone.spray_width))
+        spacing = self.field.width / n_cols
         waypoints = []
-        for row in range(n_rows):
-            y = row * spacing + spacing / 2
-            if row % 2 == 0:
-                waypoints.append((0, y))
-                waypoints.append((self.field.width, y))
+        for col in range(n_cols):
+            x = col * spacing + spacing / 2
+            if col % 2 == 0:
+                waypoints.append((x, 0))
+                waypoints.append((x, self.field.height))
             else:
-                waypoints.append((self.field.width, y))
-                waypoints.append((0, y))
+                waypoints.append((x, self.field.height))
+                waypoints.append((x, 0))
         return waypoints
 
     def _sweep_path(self, sweep_angle_deg: float) -> List[Tuple[float, float]]:
         angle_rad = math.radians(sweep_angle_deg)
         sweep = (math.cos(angle_rad), math.sin(angle_rad))
-        perp = (-sweep[1], sweep[0])
+        perp = (sweep[1], -sweep[0])
 
         bounds = self.field.bounds
         cx = (bounds[0] + bounds[2]) / 2
@@ -70,6 +72,55 @@ class LawnmowerPlanner:
 
     def _dist(self, a: Tuple[float, float], b: Tuple[float, float]) -> float:
         return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+
+    def _sweep_path_rectangle(self, sweep_angle_deg: float) -> List[Tuple[float, float]]:
+        angle_rad = math.radians(sweep_angle_deg)
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+
+        eff_width = abs(cos_a * self.field.width) + abs(sin_a * self.field.height)
+        eff_height = abs(sin_a * self.field.width) + abs(cos_a * self.field.height)
+
+        n_rows = max(1, math.ceil(eff_width / self.drone.spray_width))
+        spacing = eff_width / n_rows
+
+        waypoints = []
+        for row in range(n_rows):
+            x_pos = row * spacing + spacing / 2 - eff_width / 2
+
+            if row % 2 == 0:
+                start_local = (x_pos, -eff_height / 2)
+                end_local = (x_pos, eff_height / 2)
+            else:
+                start_local = (x_pos, eff_height / 2)
+                end_local = (x_pos, -eff_height / 2)
+
+            rot_start = self._rotate_point(start_local, angle_rad)
+            rot_end = self._rotate_point(end_local, angle_rad)
+
+            shifted_start = (rot_start[0] + self.field.width / 2,
+                             rot_start[1] + self.field.height / 2)
+            shifted_end = (rot_end[0] + self.field.width / 2,
+                           rot_end[1] + self.field.height / 2)
+
+            c_start = self._clamp_to_field(shifted_start)
+            c_end = self._clamp_to_field(shifted_end)
+
+            if not waypoints or self._dist(waypoints[-1], c_start) > 0.01:
+                waypoints.append(c_start)
+            waypoints.append(c_end)
+
+        return waypoints
+
+    def _rotate_point(self, pt: Tuple[float, float], angle: float) -> Tuple[float, float]:
+        x, y = pt
+        return (x * math.cos(angle) - y * math.sin(angle),
+                x * math.sin(angle) + y * math.cos(angle))
+
+    def _clamp_to_field(self, pt: Tuple[float, float]) -> Tuple[float, float]:
+        x = max(0, min(self.field.width, pt[0]))
+        y = max(0, min(self.field.height, pt[1]))
+        return (x, y)
 
     def describe(self) -> str:
         return "Lawnmower"

@@ -20,7 +20,7 @@ class OptimizerPlanner:
     def _sweep_path_polygon(self, sweep_angle_deg: float) -> List[Tuple[float, float]]:
         angle_rad = math.radians(sweep_angle_deg)
         sweep = (math.cos(angle_rad), math.sin(angle_rad))
-        perp = (-sweep[1], sweep[0])
+        perp = (sweep[1], -sweep[0])
 
         bounds = self.field.bounds
         cx = (bounds[0] + bounds[2]) / 2

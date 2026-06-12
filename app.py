@@ -42,9 +42,10 @@ with st.sidebar:
         field = Field(width=field_width, height=field_height, name=field_name)
     else:
         shape_preset = st.selectbox("Preset Shapes", [
-            "Custom", "Triangle", "Hexagon", "L-Shape", "Trapezoid"
+            "Custom", "Rectangle", "Triangle", "Hexagon", "L-Shape", "Trapezoid"
         ])
         polygon_presets = {
+            "Rectangle": [(50, 50), (350, 50), (350, 250), (50, 250)],
             "Triangle": [(50, 50), (350, 50), (200, 280)],
             "Hexagon": [(100, 50), (300, 50), (350, 150),
                         (300, 250), (100, 250), (50, 150)],
@@ -54,7 +55,24 @@ with st.sidebar:
         }
         if shape_preset != "Custom":
             verts = polygon_presets[shape_preset]
-            verts_text = "\n".join(f"{x}, {y}" for x, y in verts)
+            xs = [v[0] for v in verts]
+            ys = [v[1] for v in verts]
+            orig_w = max(xs) - min(xs)
+            orig_h = max(ys) - min(ys)
+
+            preset_w = st.number_input("Preset Width (m)", min_value=10.0, value=float(orig_w), step=10.0)
+            preset_h = st.number_input("Preset Height (m)", min_value=10.0, value=float(orig_h), step=10.0)
+
+            xmin, ymin = min(xs), min(ys)
+            scaled_verts = []
+            for vx, vy in verts:
+                local_x = vx - xmin
+                local_y = vy - ymin
+                scaled_x = local_x * (preset_w / orig_w)
+                scaled_y = local_y * (preset_h / orig_h)
+                scaled_verts.append((scaled_x, scaled_y))
+
+            verts_text = "\n".join(f"{x:.1f}, {y:.1f}" for x, y in scaled_verts)
             field_name = f"{shape_preset} Field"
         else:
             verts_text = st.text_area(
@@ -64,6 +82,37 @@ with st.sidebar:
                 help="Enter one vertex per line as 'x, y'"
             )
             field_name = st.text_input("Field Name", "Polygon Field")
+
+            try:
+                temp_verts = []
+                for line in verts_text.strip().split("\n"):
+                    line = line.strip()
+                    if line:
+                        parts = line.split(",")
+                        x, y = float(parts[0].strip()), float(parts[1].strip())
+                        temp_verts.append((x, y))
+                if len(temp_verts) >= 3:
+                    xs = [v[0] for v in temp_verts]
+                    ys = [v[1] for v in temp_verts]
+                    orig_w = max(xs) - min(xs)
+                    orig_h = max(ys) - min(ys)
+
+                    scale_custom = st.checkbox("Scale Custom Shape", value=False)
+                    if scale_custom:
+                        custom_w = st.number_input("Target Width (m)", min_value=10.0, value=float(orig_w), step=10.0)
+                        custom_h = st.number_input("Target Height (m)", min_value=10.0, value=float(orig_h), step=10.0)
+
+                        xmin, ymin = min(xs), min(ys)
+                        scaled_verts = []
+                        for vx, vy in temp_verts:
+                            local_x = vx - xmin
+                            local_y = vy - ymin
+                            scaled_x = local_x * (custom_w / orig_w) if orig_w > 0 else local_x
+                            scaled_y = local_y * (custom_h / orig_h) if orig_h > 0 else local_y
+                            scaled_verts.append((scaled_x, scaled_y))
+                        verts_text = "\n".join(f"{x:.1f}, {y:.1f}" for x, y in scaled_verts)
+            except Exception:
+                pass
 
         try:
             raw_verts = []
@@ -104,12 +153,16 @@ if run_btn:
     base_planner = LawnmowerPlanner(field, drone)
     opt_planner = OptimizerPlanner(field, drone)
 
-    base_waypoints = base_planner.plan()
-    opt_waypoints = opt_planner.plan()
+    # Force vertical sweep direction (y-axis up-down)
+    # For polygons, 90 deg is vertical; for rectangles, 0 deg is vertical.
+    sweep_angle = 90.0 if field.is_polygon else 0.0
+
+    base_waypoints = base_planner.plan(sweep_angle_deg=sweep_angle)
+    opt_waypoints = opt_planner.plan(sweep_angle_deg=sweep_angle)
 
     sim = Simulator(field, drone, ops)
-    base_metrics = sim.run(base_waypoints, hours_per_day)
-    opt_metrics = sim.run(opt_waypoints, hours_per_day)
+    base_metrics = sim.run(base_waypoints, hours_per_day, use_lookahead=False)
+    opt_metrics = sim.run(opt_waypoints, hours_per_day, use_lookahead=True)
 
     st.session_state.base_metrics = base_metrics
     st.session_state.opt_metrics = opt_metrics
@@ -119,7 +172,7 @@ if run_btn:
     st.session_state.fwidth = field.width or 400
     st.session_state.fheight = field.height or 300
     st.session_state.fverts = field.vertices
-    st.session_state.best_angle = opt_planner._find_best_sweep_direction()
+    st.session_state.best_angle = sweep_angle
 
 if st.session_state.base_metrics is not None:
     bm = st.session_state.base_metrics
@@ -143,7 +196,7 @@ if st.session_state.base_metrics is not None:
         c1.metric("Acres / Hour", f"{bm.acres_per_hour:.2f}")
         c2.metric("Coverage Eff.", f"{bm.total_acres / f.area_acres * 100:.1f}%" if f.area_acres > 0 else "N/A")
 
-        st.plotly_chart(plot_path_coverage(bw, fw, fh, fv, title="Baseline Path"), use_container_width=True)
+        st.plotly_chart(plot_path_coverage(bw, fw, fh, fv, title="Baseline Path", field=f, spray_width=drone.spray_width), use_container_width=True)
         st.plotly_chart(plot_time_breakdown(bm, title="Baseline Time Breakdown"), use_container_width=True)
         st.plotly_chart(plot_flight_summary(bm, title="Baseline Flights"), use_container_width=True)
 
@@ -157,7 +210,7 @@ if st.session_state.base_metrics is not None:
         c1.metric("Acres / Hour", f"{om.acres_per_hour:.2f}")
         c2.metric("Coverage Eff.", f"{om.total_acres / f.area_acres * 100:.1f}%" if f.area_acres > 0 else "N/A")
 
-        st.plotly_chart(plot_path_coverage(ow, fw, fh, fv, title="Optimized Path"), use_container_width=True)
+        st.plotly_chart(plot_path_coverage(ow, fw, fh, fv, title="Optimized Path", field=f, spray_width=drone.spray_width), use_container_width=True)
         st.plotly_chart(plot_time_breakdown(om, title="Optimized Time Breakdown"), use_container_width=True)
         st.plotly_chart(plot_flight_summary(om, title="Optimized Flights"), use_container_width=True)
 
@@ -181,7 +234,13 @@ if st.session_state.base_metrics is not None:
             if len(path) >= 2:
                 st.plotly_chart(
                     plot_animated_flight(path, fw, fh, fv,
-                                         title=f"Flight {sel_flight + 1} — Step-by-Step Animation"),
+                                         title=f"Flight {sel_flight + 1} — Step-by-Step Animation",
+                                         drone_speed=drone.speed,
+                                         spray_width=drone.spray_width,
+                                         field=f,
+                                         battery_capacity=drone.battery_capacity,
+                                         all_flights=flights_data,
+                                         current_flight_idx=sel_flight),
                     use_container_width=True
                 )
                 st.caption("Click **Play** to watch the drone fly. Use the **slider** to jump to any step.")
